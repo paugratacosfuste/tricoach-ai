@@ -1,14 +1,15 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useOnboarding } from '@/contexts/OnboardingContext';
+import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard';
+import { Dashboard } from '@/pages/Dashboard';
 
 const Index = () => {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
-    </div>
-  );
+  const { isComplete } = useOnboarding();
+
+  if (!isComplete) {
+    return <OnboardingWizard />;
+  }
+
+  return <Dashboard />;
 };
 
 export default Index;
