@@ -4,6 +4,7 @@ import { useTraining } from '@/contexts/TrainingContext';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { ArrowLeft, Link as LinkIcon, Calendar, Activity, CheckCircle2, Loader2 } from 'lucide-react';
+import { OnboardingData } from '@/types/training';
 
 export function IntegrationsStep() {
   const { data, updateIntegrations, setCurrentStep, completeOnboarding } = useOnboarding();
@@ -33,11 +34,12 @@ export function IntegrationsStep() {
   };
 
   const handleComplete = async () => {
-    setIsGenerating(true);
-    await generatePlan();
-    completeOnboarding();
-    setIsGenerating(false);
-  };
+  setIsGenerating(true);
+  // Pass the complete user data to generate a personalized plan
+  await generatePlan(data as OnboardingData);
+  completeOnboarding();
+  setIsGenerating(false);
+};
 
   const googleConnected = data.integrations?.googleCalendar?.connected;
   const stravaConnected = data.integrations?.strava?.connected;

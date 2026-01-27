@@ -10,20 +10,23 @@ import { Button } from '@/components/ui/button';
 import { Workout } from '@/types/training';
 import { format, startOfWeek, isSameDay } from 'date-fns';
 import { TrendingUp, Clock, MapPin, RefreshCw, Loader2 } from 'lucide-react';
+import { Workout, OnboardingData } from '@/types/training';
 
 export function Dashboard() {
   const { data } = useOnboarding();
   const { 
-    plan, 
-    loading,
-    generatePlan,
-    getTodayWorkout, 
-    getWorkoutsForDate,
-    getWeekWorkouts,
-    updateWorkoutStatus,
-    completedCount,
-    totalCount 
-  } = useTraining();
+  plan, 
+  loading,
+  error,
+  generatePlan,
+  getTodayWorkout, 
+  getWorkoutsForDate,
+  getWeekWorkouts,
+  updateWorkoutStatus,
+  completedCount,
+  totalCount,
+  clearError,
+} = useTraining();
   
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [selectedWorkout, setSelectedWorkout] = useState<Workout | null>(null);
@@ -77,7 +80,7 @@ export function Dashboard() {
           </div>
           <Button
             variant="outline"
-            onClick={generatePlan}
+            onClick={() => generatePlan(data as OnboardingData)}
             disabled={loading}
             className="hidden sm:flex"
           >

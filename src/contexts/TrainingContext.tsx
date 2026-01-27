@@ -1,11 +1,18 @@
-import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
-import { TrainingPlan, Workout, WorkoutStatus } from '@/types/training';
-import { generateMockPlan } from '@/lib/mockPlanGenerator';
+// src/contexts/TrainingContext.tsx
+//
+// PURPOSE: Manages all training plan data and provides it to the entire app.
+// Updated to use Claude API instead of mock generator.
+
+import React, { createContext, useContext, useState, ReactNode } from 'react';
+import { TrainingPlan, Workout, WorkoutStatus, OnboardingData } from '@/types/training';
+import { generateTrainingPlanWithClaude } from '@/lib/claudeApi';
+import { generateMockPlan } from '@/lib/mockPlanGenerator'; // Keep as fallback
 
 interface TrainingContextType {
   plan: TrainingPlan | null;
   loading: boolean;
-  generatePlan: () => Promise<void>;
+  error: string | null;
+  generatePlan: (userData: OnboardingData) => Promise<void>;
   updateWorkoutStatus: (workoutId: string, status: WorkoutStatus, actualData?: Workout['actualData']) => void;
   getWorkoutById: (id: string) => Workout | undefined;
   getWorkoutsForDate: (date: Date) => Workout[];
@@ -13,6 +20,7 @@ interface TrainingContextType {
   getWeekWorkouts: (weekStart: Date) => Workout[];
   completedCount: number;
   totalCount: number;
+  clearError: () => void;
 }
 
 const TrainingContext = createContext<TrainingContextType | undefined>(undefined);
@@ -22,7 +30,7 @@ export function TrainingProvider({ children }: { children: ReactNode }) {
     const saved = localStorage.getItem('training_plan');
     if (saved) {
       const parsed = JSON.parse(saved);
-      // Restore dates
+      // Restore dates (JSON doesn't preserve Date objects)
       parsed.createdAt = new Date(parsed.createdAt);
       parsed.weeks.forEach((week: any) => {
         week.workouts.forEach((workout: any) => {
@@ -34,15 +42,35 @@ export function TrainingProvider({ children }: { children: ReactNode }) {
     return null;
   });
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const generatePlan = async () => {
+  // Generate a new training plan using Claude AI
+  const generatePlan = async (userData: OnboardingData) => {
     setLoading(true);
-    // Simulate AI generation delay
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    const newPlan = generateMockPlan();
-    setPlan(newPlan);
-    localStorage.setItem('training_plan', JSON.stringify(newPlan));
-    setLoading(false);
+    setError(null);
+    
+    try {
+      console.log('Generating training plan with Claude AI...');
+      const newPlan = await generateTrainingPlanWithClaude(userData);
+      
+      setPlan(newPlan);
+      localStorage.setItem('training_plan', JSON.stringify(newPlan));
+      console.log('Training plan generated successfully!');
+      
+    } catch (err) {
+      console.error('Error generating plan:', err);
+      
+      // If Claude fails, fall back to mock generator
+      console.log('Falling back to mock generator...');
+      const mockPlan = generateMockPlan();
+      setPlan(mockPlan);
+      localStorage.setItem('training_plan', JSON.stringify(mockPlan));
+      
+      // Still show the error so user knows AI generation failed
+      setError(err instanceof Error ? err.message : 'Failed to generate plan with AI. Using sample plan instead.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const updateWorkoutStatus = (workoutId: string, status: WorkoutStatus, actualData?: Workout['actualData']) => {
@@ -109,6 +137,8 @@ export function TrainingProvider({ children }: { children: ReactNode }) {
     return workouts.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   };
 
+  const clearError = () => setError(null);
+
   const allWorkouts = plan?.weeks.flatMap(w => w.workouts.filter(wo => wo.type !== 'rest')) || [];
   const completedCount = allWorkouts.filter(w => w.status === 'completed').length;
   const totalCount = allWorkouts.length;
@@ -117,6 +147,7 @@ export function TrainingProvider({ children }: { children: ReactNode }) {
     <TrainingContext.Provider value={{
       plan,
       loading,
+      error,
       generatePlan,
       updateWorkoutStatus,
       getWorkoutById,
@@ -125,6 +156,7 @@ export function TrainingProvider({ children }: { children: ReactNode }) {
       getWeekWorkouts,
       completedCount,
       totalCount,
+      clearError,
     }}>
       {children}
     </TrainingContext.Provider>
