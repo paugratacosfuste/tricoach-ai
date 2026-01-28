@@ -1,172 +1,439 @@
 // src/contexts/TrainingContext.tsx
 //
-// PURPOSE: Manages all training plan data and provides it to the entire app.
-// Updated to use Claude API instead of mock generator.
+// PURPOSE: Manages all training plan state.
+// Handles week generation, workout completion, and history tracking.
 
-import React, { createContext, useContext, useState, ReactNode } from 'react';
-import { TrainingPlan, Workout, WorkoutStatus, OnboardingData } from '@/types/training';
-import { generateTrainingPlanWithClaude } from '@/lib/claudeApi';
-import { generateMockPlan } from '@/lib/mockPlanGenerator'; // Keep as fallback
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import {
+  TrainingPlan,
+  WeekPlan,
+  Workout,
+  CompletedWeek,
+  WeekFeedback,
+  OnboardingData,
+  WorkoutStatus,
+} from '@/types/training';
+import { generateWeekPlan, createWeekSummary } from '@/lib/claudeApi';
+
+// ============================================
+// CONTEXT TYPES
+// ============================================
 
 interface TrainingContextType {
+  // State
   plan: TrainingPlan | null;
-  loading: boolean;
+  currentWeek: WeekPlan | null;
+  isLoading: boolean;
   error: string | null;
-  generatePlan: (userData: OnboardingData) => Promise<void>;
+  
+  // Plan management
+  initializePlan: (userData: OnboardingData) => Promise<void>;
+  generateNextWeek: (feedback: WeekFeedback, constraints?: string) => Promise<void>;
+  
+  // Workout management
   updateWorkoutStatus: (workoutId: string, status: WorkoutStatus, actualData?: Workout['actualData']) => void;
-  getWorkoutById: (id: string) => Workout | undefined;
-  getWorkoutsForDate: (date: Date) => Workout[];
-  getTodayWorkout: () => Workout | undefined;
-  getWeekWorkouts: (weekStart: Date) => Workout[];
-  completedCount: number;
-  totalCount: number;
+  getWorkoutById: (workoutId: string) => Workout | undefined;
+  getTodaysWorkout: () => Workout | undefined;
+  getUpcomingWorkouts: (count: number) => Workout[];
+  
+  // Week management
+  completeCurrentWeek: (feedback: WeekFeedback) => void;
+  
+  // Utilities
   clearError: () => void;
+  resetPlan: () => void;
 }
 
 const TrainingContext = createContext<TrainingContextType | undefined>(undefined);
 
-export function TrainingProvider({ children }: { children: ReactNode }) {
-  const [plan, setPlan] = useState<TrainingPlan | null>(() => {
-    const saved = localStorage.getItem('training_plan');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      // Restore dates (JSON doesn't preserve Date objects)
-      parsed.createdAt = new Date(parsed.createdAt);
-      parsed.weeks.forEach((week: any) => {
-        week.workouts.forEach((workout: any) => {
-          workout.date = new Date(workout.date);
-        });
-      });
-      return parsed;
+// ============================================
+// LOCAL STORAGE KEYS
+// ============================================
+
+const STORAGE_KEYS = {
+  PLAN: 'tricoach-training-plan',
+  USER_DATA: 'tricoach-user-data',
+};
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+function calculateTotalWeeks(raceDate: Date): number {
+  const now = new Date();
+  const diffTime = new Date(raceDate).getTime() - now.getTime();
+  const diffWeeks = Math.ceil(diffTime / (1000 * 60 * 60 * 24 * 7));
+  return Math.max(1, Math.min(52, diffWeeks)); // Cap at 52 weeks
+}
+
+function savePlanToStorage(plan: TrainingPlan): void {
+  try {
+    localStorage.setItem(STORAGE_KEYS.PLAN, JSON.stringify(plan));
+  } catch (error) {
+    console.error('Failed to save plan to localStorage:', error);
+  }
+}
+
+function loadPlanFromStorage(): TrainingPlan | null {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEYS.PLAN);
+    if (!stored) return null;
+    
+    const plan = JSON.parse(stored);
+    
+    // Rehydrate dates
+    plan.createdAt = new Date(plan.createdAt);
+    plan.raceDate = new Date(plan.raceDate);
+    
+    if (plan.currentWeek) {
+      plan.currentWeek.startDate = new Date(plan.currentWeek.startDate);
+      plan.currentWeek.endDate = new Date(plan.currentWeek.endDate);
+      plan.currentWeek.workouts = plan.currentWeek.workouts.map((w: any) => ({
+        ...w,
+        date: new Date(w.date),
+      }));
     }
+    
+    plan.completedWeeks = plan.completedWeeks.map((week: any) => ({
+      ...week,
+      startDate: new Date(week.startDate),
+      endDate: new Date(week.endDate),
+      workouts: week.workouts.map((w: any) => ({
+        ...w,
+        date: new Date(w.date),
+      })),
+    }));
+    
+    return plan;
+  } catch (error) {
+    console.error('Failed to load plan from localStorage:', error);
     return null;
-  });
-  const [loading, setLoading] = useState(false);
+  }
+}
+
+function saveUserDataToStorage(userData: OnboardingData): void {
+  try {
+    localStorage.setItem(STORAGE_KEYS.USER_DATA, JSON.stringify(userData));
+  } catch (error) {
+    console.error('Failed to save user data to localStorage:', error);
+  }
+}
+
+function loadUserDataFromStorage(): OnboardingData | null {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEYS.USER_DATA);
+    if (!stored) return null;
+    
+    const data = JSON.parse(stored);
+    // Rehydrate race date
+    if (data.goal?.raceDate) {
+      data.goal.raceDate = new Date(data.goal.raceDate);
+    }
+    return data;
+  } catch (error) {
+    console.error('Failed to load user data from localStorage:', error);
+    return null;
+  }
+}
+
+// ============================================
+// PROVIDER COMPONENT
+// ============================================
+
+export function TrainingProvider({ children }: { children: ReactNode }) {
+  const [plan, setPlan] = useState<TrainingPlan | null>(null);
+  const [userData, setUserData] = useState<OnboardingData | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Generate a new training plan using Claude AI
-  const generatePlan = async (userData: OnboardingData) => {
-    setLoading(true);
+  // Load from localStorage on mount
+  useEffect(() => {
+    const storedPlan = loadPlanFromStorage();
+    const storedUserData = loadUserDataFromStorage();
+    
+    if (storedPlan) {
+      setPlan(storedPlan);
+      console.log('Loaded plan from storage:', storedPlan);
+    }
+    
+    if (storedUserData) {
+      setUserData(storedUserData);
+    }
+  }, []);
+
+  // Save plan whenever it changes
+  useEffect(() => {
+    if (plan) {
+      savePlanToStorage(plan);
+    }
+  }, [plan]);
+
+  /**
+   * Initialize a new training plan and generate the first week
+   */
+  const initializePlan = async (newUserData: OnboardingData): Promise<void> => {
+    setIsLoading(true);
     setError(null);
     
     try {
-      console.log('Generating training plan with Claude AI...');
-      const newPlan = await generateTrainingPlanWithClaude(userData);
+      // Save user data
+      setUserData(newUserData);
+      saveUserDataToStorage(newUserData);
+      
+      // Calculate total weeks until race
+      const totalWeeks = calculateTotalWeeks(new Date(newUserData.goal.raceDate));
+      
+      console.log(`Initializing ${totalWeeks}-week plan for ${newUserData.goal.raceName}`);
+      
+      // Generate first week
+      const firstWeek = await generateWeekPlan(
+        newUserData,
+        1,
+        totalWeeks,
+        [] // No history yet
+      );
+      
+      // Create the plan
+      const newPlan: TrainingPlan = {
+        id: `plan-${Date.now()}`,
+        createdAt: new Date(),
+        raceName: newUserData.goal.raceName,
+        raceDate: new Date(newUserData.goal.raceDate),
+        raceType: newUserData.goal.raceType,
+        totalWeeks,
+        currentWeekNumber: 1,
+        currentWeek: firstWeek,
+        completedWeeks: [],
+      };
       
       setPlan(newPlan);
-      localStorage.setItem('training_plan', JSON.stringify(newPlan));
-      console.log('Training plan generated successfully!');
+      console.log('Plan initialized successfully!');
       
     } catch (err) {
-      console.error('Error generating plan:', err);
-      
-      // If Claude fails, fall back to mock generator
-      console.log('Falling back to mock generator...');
-      const mockPlan = generateMockPlan();
-      setPlan(mockPlan);
-      localStorage.setItem('training_plan', JSON.stringify(mockPlan));
-      
-      // Still show the error so user knows AI generation failed
-      setError(err instanceof Error ? err.message : 'Failed to generate plan with AI. Using sample plan instead.');
+      const message = err instanceof Error ? err.message : 'Failed to initialize plan';
+      console.error('Error initializing plan:', message);
+      setError(message);
+      throw err;
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
 
-  const updateWorkoutStatus = (workoutId: string, status: WorkoutStatus, actualData?: Workout['actualData']) => {
-    if (!plan) return;
+  /**
+   * Complete the current week and generate the next one
+   */
+  const generateNextWeek = async (feedback: WeekFeedback, constraints?: string): Promise<void> => {
+    if (!plan || !plan.currentWeek || !userData) {
+      setError('No active plan or user data found');
+      return;
+    }
     
-    const updatedPlan = {
-      ...plan,
-      weeks: plan.weeks.map(week => ({
-        ...week,
-        workouts: week.workouts.map(workout => 
-          workout.id === workoutId 
-            ? { ...workout, status, actualData }
-            : workout
-        ),
-      })),
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      // Create completed week record
+      const completedWeek: CompletedWeek = {
+        weekNumber: plan.currentWeek.weekNumber,
+        startDate: plan.currentWeek.startDate,
+        endDate: plan.currentWeek.endDate,
+        phase: plan.currentWeek.phase,
+        theme: plan.currentWeek.theme,
+        focus: plan.currentWeek.focus,
+        workouts: plan.currentWeek.workouts,
+        summary: createWeekSummary(plan.currentWeek, feedback),
+      };
+      
+      const newCompletedWeeks = [...plan.completedWeeks, completedWeek];
+      const nextWeekNumber = plan.currentWeekNumber + 1;
+      
+      // Check if we've reached the race
+      if (nextWeekNumber > plan.totalWeeks) {
+        // Plan complete!
+        setPlan({
+          ...plan,
+          currentWeekNumber: nextWeekNumber,
+          currentWeek: null,
+          completedWeeks: newCompletedWeeks,
+        });
+        console.log('Training plan completed! Race week reached.');
+        return;
+      }
+      
+      // Generate next week
+      console.log(`Generating week ${nextWeekNumber} of ${plan.totalWeeks}...`);
+      
+      const nextWeek = await generateWeekPlan(
+        userData,
+        nextWeekNumber,
+        plan.totalWeeks,
+        newCompletedWeeks,
+        constraints
+      );
+      
+      // Update plan
+      setPlan({
+        ...plan,
+        currentWeekNumber: nextWeekNumber,
+        currentWeek: nextWeek,
+        completedWeeks: newCompletedWeeks,
+      });
+      
+      console.log(`Week ${nextWeekNumber} generated successfully!`);
+      
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to generate next week';
+      console.error('Error generating next week:', message);
+      setError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  /**
+   * Complete current week without generating next (for manual review)
+   */
+  const completeCurrentWeek = (feedback: WeekFeedback): void => {
+    if (!plan || !plan.currentWeek) return;
+    
+    const completedWeek: CompletedWeek = {
+      weekNumber: plan.currentWeek.weekNumber,
+      startDate: plan.currentWeek.startDate,
+      endDate: plan.currentWeek.endDate,
+      phase: plan.currentWeek.phase,
+      theme: plan.currentWeek.theme,
+      focus: plan.currentWeek.focus,
+      workouts: plan.currentWeek.workouts,
+      summary: createWeekSummary(plan.currentWeek, feedback),
     };
-    setPlan(updatedPlan);
-    localStorage.setItem('training_plan', JSON.stringify(updatedPlan));
-  };
-
-  const getWorkoutById = (id: string): Workout | undefined => {
-    if (!plan) return undefined;
-    for (const week of plan.weeks) {
-      const workout = week.workouts.find(w => w.id === id);
-      if (workout) return workout;
-    }
-    return undefined;
-  };
-
-  const getWorkoutsForDate = (date: Date): Workout[] => {
-    if (!plan) return [];
-    const dateStr = date.toDateString();
-    const workouts: Workout[] = [];
-    plan.weeks.forEach(week => {
-      week.workouts.forEach(workout => {
-        if (new Date(workout.date).toDateString() === dateStr) {
-          workouts.push(workout);
-        }
-      });
-    });
-    return workouts;
-  };
-
-  const getTodayWorkout = (): Workout | undefined => {
-    const today = new Date();
-    const workouts = getWorkoutsForDate(today);
-    return workouts.find(w => w.type !== 'rest');
-  };
-
-  const getWeekWorkouts = (weekStart: Date): Workout[] => {
-    if (!plan) return [];
-    const workouts: Workout[] = [];
-    const startTime = weekStart.getTime();
-    const endTime = startTime + 7 * 24 * 60 * 60 * 1000;
     
-    plan.weeks.forEach(week => {
-      week.workouts.forEach(workout => {
-        const workoutTime = new Date(workout.date).getTime();
-        if (workoutTime >= startTime && workoutTime < endTime) {
-          workouts.push(workout);
-        }
-      });
+    setPlan({
+      ...plan,
+      completedWeeks: [...plan.completedWeeks, completedWeek],
     });
-    return workouts.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   };
 
-  const clearError = () => setError(null);
+  /**
+   * Update a workout's status and optional actual data
+   */
+  const updateWorkoutStatus = (
+    workoutId: string,
+    status: WorkoutStatus,
+    actualData?: Workout['actualData']
+  ): void => {
+    if (!plan || !plan.currentWeek) return;
+    
+    const updatedWorkouts = plan.currentWeek.workouts.map((workout) => {
+      if (workout.id === workoutId) {
+        return {
+          ...workout,
+          status,
+          actualData: actualData || workout.actualData,
+        };
+      }
+      return workout;
+    });
+    
+    setPlan({
+      ...plan,
+      currentWeek: {
+        ...plan.currentWeek,
+        workouts: updatedWorkouts,
+      },
+    });
+  };
 
-  const allWorkouts = plan?.weeks.flatMap(w => w.workouts.filter(wo => wo.type !== 'rest')) || [];
-  const completedCount = allWorkouts.filter(w => w.status === 'completed').length;
-  const totalCount = allWorkouts.length;
+  /**
+   * Get a specific workout by ID
+   */
+  const getWorkoutById = (workoutId: string): Workout | undefined => {
+    if (!plan?.currentWeek) return undefined;
+    return plan.currentWeek.workouts.find((w) => w.id === workoutId);
+  };
+
+  /**
+   * Get today's workout (if any)
+   */
+  const getTodaysWorkout = (): Workout | undefined => {
+    if (!plan?.currentWeek) return undefined;
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    return plan.currentWeek.workouts.find((w) => {
+      const workoutDate = new Date(w.date);
+      workoutDate.setHours(0, 0, 0, 0);
+      return workoutDate.getTime() === today.getTime();
+    });
+  };
+
+  /**
+   * Get upcoming workouts (from today forward)
+   */
+  const getUpcomingWorkouts = (count: number): Workout[] => {
+    if (!plan?.currentWeek) return [];
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    return plan.currentWeek.workouts
+      .filter((w) => {
+        const workoutDate = new Date(w.date);
+        workoutDate.setHours(0, 0, 0, 0);
+        return workoutDate.getTime() >= today.getTime() && w.type !== 'rest';
+      })
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+      .slice(0, count);
+  };
+
+  /**
+   * Clear error state
+   */
+  const clearError = (): void => {
+    setError(null);
+  };
+
+  /**
+   * Reset everything
+   */
+  const resetPlan = (): void => {
+    setPlan(null);
+    setUserData(null);
+    localStorage.removeItem(STORAGE_KEYS.PLAN);
+    localStorage.removeItem(STORAGE_KEYS.USER_DATA);
+  };
 
   return (
-    <TrainingContext.Provider value={{
-      plan,
-      loading,
-      error,
-      generatePlan,
-      updateWorkoutStatus,
-      getWorkoutById,
-      getWorkoutsForDate,
-      getTodayWorkout,
-      getWeekWorkouts,
-      completedCount,
-      totalCount,
-      clearError,
-    }}>
+    <TrainingContext.Provider
+      value={{
+        plan,
+        currentWeek: plan?.currentWeek || null,
+        isLoading,
+        error,
+        initializePlan,
+        generateNextWeek,
+        updateWorkoutStatus,
+        getWorkoutById,
+        getTodaysWorkout,
+        getUpcomingWorkouts,
+        completeCurrentWeek,
+        clearError,
+        resetPlan,
+      }}
+    >
       {children}
     </TrainingContext.Provider>
   );
 }
 
-export function useTraining() {
+// ============================================
+// HOOK
+// ============================================
+
+export function useTraining(): TrainingContextType {
   const context = useContext(TrainingContext);
-  if (!context) {
-    throw new Error('useTraining must be used within TrainingProvider');
+  if (context === undefined) {
+    throw new Error('useTraining must be used within a TrainingProvider');
   }
   return context;
 }
