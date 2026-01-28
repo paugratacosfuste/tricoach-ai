@@ -1,6 +1,6 @@
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard';
-import { Dashboard } from '@/pages/Dashboard';
+import Dashboard from '@/pages/Dashboard';
 
 const Index = () => {
   const { isComplete } = useOnboarding();
