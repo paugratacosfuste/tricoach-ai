@@ -33,62 +33,90 @@ function getWeeksUntilRace(raceDate: Date): number {
 }
 
 /**
- * Builds a CONCISE prompt to avoid response truncation
+ * Builds the prompt that we send to Claude
  */
 function buildPrompt(userData: OnboardingData): string {
   const weeksUntilRace = getWeeksUntilRace(new Date(userData.goal.raceDate));
   const phase = calculateTrainingPhase(weeksUntilRace);
   const isTriathlon = ['olympic-triathlon', 'sprint-triathlon', '70.3-ironman', 'full-ironman'].includes(userData.goal.raceType);
   
-  return `You are an expert endurance coach. Create a 4-week training plan as JSON.
+  return `You are an expert endurance coach creating a personalized 4-week training plan.
 
-ATHLETE: ${userData.profile.firstName}, ${userData.profile.age}yo, ${userData.profile.weight}kg
-FITNESS: ${userData.fitness.fitnessLevel}, LTHR ${userData.fitness.lthr}bpm, threshold pace ${userData.fitness.thresholdPace}/km, max HR ${userData.fitness.maxHR}bpm
-GOAL: ${userData.goal.raceType} "${userData.goal.raceName}" on ${new Date(userData.goal.raceDate).toLocaleDateString()} (${weeksUntilRace} weeks away)
-PHASE: ${phase}
-DISCIPLINES: ${isTriathlon ? 'swim, bike, run' : 'run only'}
+## ATHLETE
+- Name: ${userData.profile.firstName}
+- Age: ${userData.profile.age}, Weight: ${userData.profile.weight}kg, Height: ${userData.profile.height}cm
+- Level: ${userData.fitness.fitnessLevel}
+- Max HR: ${userData.fitness.maxHR}bpm, LTHR: ${userData.fitness.lthr}bpm
+- Threshold pace: ${userData.fitness.thresholdPace}/km
+${userData.fitness.ftp ? `- FTP: ${userData.fitness.ftp}W` : ''}
+- Swim level: ${userData.fitness.swimLevel}
 
-AVAILABILITY:
-Mon: ${userData.availability.monday.available ? userData.availability.monday.maxDuration : 'off'}
-Tue: ${userData.availability.tuesday.available ? userData.availability.tuesday.maxDuration : 'off'}
-Wed: ${userData.availability.wednesday.available ? userData.availability.wednesday.maxDuration : 'off'}
-Thu: ${userData.availability.thursday.available ? userData.availability.thursday.maxDuration : 'off'}
-Fri: ${userData.availability.friday.available ? userData.availability.friday.maxDuration : 'off'}
-Sat: ${userData.availability.saturday.available ? userData.availability.saturday.maxDuration + (userData.availability.saturday.longSession ? ' LONG' : '') : 'off'}
-Sun: ${userData.availability.sunday.available ? userData.availability.sunday.maxDuration + (userData.availability.sunday.longSession ? ' LONG' : '') : 'off'}
+## GOAL
+- Race: ${userData.goal.raceType} "${userData.goal.raceName}"
+- Date: ${new Date(userData.goal.raceDate).toLocaleDateString()} (${weeksUntilRace} weeks)
+- Phase: ${phase}
+- Priority: ${userData.goal.priority}
+${userData.goal.goalTime ? `- Target: ${userData.goal.goalTime}` : ''}
 
-Return ONLY this JSON structure (no markdown, no extra text):
+## AVAILABILITY
+Mon: ${userData.availability.monday.available ? userData.availability.monday.maxDuration : 'REST'}
+Tue: ${userData.availability.tuesday.available ? userData.availability.tuesday.maxDuration : 'REST'}
+Wed: ${userData.availability.wednesday.available ? userData.availability.wednesday.maxDuration : 'REST'}
+Thu: ${userData.availability.thursday.available ? userData.availability.thursday.maxDuration : 'REST'}
+Fri: ${userData.availability.friday.available ? userData.availability.friday.maxDuration : 'REST'}
+Sat: ${userData.availability.saturday.available ? userData.availability.saturday.maxDuration + (userData.availability.saturday.longSession ? ' (LONG)' : '') : 'REST'}
+Sun: ${userData.availability.sunday.available ? userData.availability.sunday.maxDuration + (userData.availability.sunday.longSession ? ' (LONG)' : '') : 'REST'}
+
+## INSTRUCTIONS
+Create a 4-week ${isTriathlon ? 'triathlon' : 'running'} training plan. Return ONLY valid JSON.
+
+For EACH workout description, include:
+1. Session overview (1 sentence)
+2. WARM-UP: duration and what to do
+3. MAIN SET: detailed intervals/structure with specific paces and HR zones based on their LTHR of ${userData.fitness.lthr}bpm
+4. COOL-DOWN: duration and what to do
+5. Key focus points
+
+Calculate HR zones from LTHR ${userData.fitness.lthr}:
+- Zone 1 (Recovery): ${Math.round(userData.fitness.lthr * 0.68)}-${Math.round(userData.fitness.lthr * 0.73)}bpm
+- Zone 2 (Aerobic): ${Math.round(userData.fitness.lthr * 0.73)}-${Math.round(userData.fitness.lthr * 0.80)}bpm
+- Zone 3 (Tempo): ${Math.round(userData.fitness.lthr * 0.80)}-${Math.round(userData.fitness.lthr * 0.87)}bpm
+- Zone 4 (Threshold): ${Math.round(userData.fitness.lthr * 0.87)}-${Math.round(userData.fitness.lthr * 0.93)}bpm
+- Zone 5 (VO2max): ${Math.round(userData.fitness.lthr * 0.93)}-${Math.round(userData.fitness.lthr * 1.05)}bpm
+
+JSON structure:
 {
   "phase": "${phase}",
-  "notes": "brief overview",
+  "notes": "Overall plan summary",
   "weeks": [
     {
       "weekNumber": 1,
-      "theme": "week theme",
-      "focus": "week focus",
+      "theme": "Theme",
+      "focus": "Focus area",
       "workouts": [
         {
           "dayOfWeek": "monday",
           "type": "run",
           "name": "Workout Name",
-          "duration": 45,
-          "distance": 8,
-          "purpose": "why this workout",
-          "description": "Full workout description with warm-up, main set, cool-down details. Include HR zones and pace targets.",
-          "coachingTips": ["tip1", "tip2"]
+          "duration": 60,
+          "distance": 10,
+          "purpose": "Why this workout matters for the athlete",
+          "description": "WARM-UP: 10min easy jog at Zone 1 (${Math.round(userData.fitness.lthr * 0.68)}-${Math.round(userData.fitness.lthr * 0.73)}bpm). MAIN SET: 4x5min at Zone 4 (${Math.round(userData.fitness.lthr * 0.87)}-${Math.round(userData.fitness.lthr * 0.93)}bpm) with 2min easy jog recovery. Pace target: ${userData.fitness.thresholdPace}/km. COOL-DOWN: 10min easy jog. Focus on maintaining relaxed shoulders and quick cadence.",
+          "coachingTips": ["Specific actionable tip 1", "Specific actionable tip 2", "Specific actionable tip 3"]
         }
       ]
     }
   ]
 }
 
-IMPORTANT RULES:
-- Include 4-6 workouts per week based on availability
-- Keep descriptions under 200 characters
-- Use type: "run", "bike", "swim", "strength", or "rest"
-- distance is in km (null for strength/rest)
-- duration is in minutes
-- Return valid JSON only - no trailing commas`;
+RULES:
+- 4-6 workouts per week based on availability
+- type must be: "run", "bike", "swim", "strength", or "rest"
+- distance in km (use null for strength/rest)
+- duration in minutes
+- Include specific HR zones and paces in descriptions
+- NO trailing commas in JSON
+- NO markdown code blocks`;
 }
 
 /**
