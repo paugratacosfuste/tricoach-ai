@@ -1,155 +1,255 @@
 // src/lib/claudeApi.ts
-// 
-// PURPOSE: This file handles all communication with the Claude API.
-// It takes user data, builds a prompt, sends it to Claude, and parses the response.
+//
+// PURPOSE: Handles all communication with Claude API.
+// Generates ONE WEEK at a time with full detail, using history context.
 
-import { OnboardingData, TrainingPlan, WeekPlan, Workout, WorkoutType } from '@/types/training';
+import {
+  OnboardingData,
+  WeekPlan,
+  Workout,
+  WorkoutType,
+  CompletedWeek,
+  WeekSummary,
+  calculateHRZones,
+  calculateTrainingPhase,
+  isRecoveryWeek,
+} from '@/types/training';
 
 // Get the API key from environment variables
 const ANTHROPIC_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY;
-
-// The API endpoint for Claude
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 
+// ============================================
+// HISTORY CONTEXT BUILDER
+// ============================================
+
 /**
- * Calculates the training phase based on weeks until race
+ * Builds a compact summary of training history for Claude
+ * Recent weeks get more detail, older weeks are compressed
  */
-function calculateTrainingPhase(weeksUntilRace: number): string {
-  if (weeksUntilRace > 16) return 'Base Building';
-  if (weeksUntilRace > 12) return 'Build Phase 1';
-  if (weeksUntilRace > 8) return 'Build Phase 2';
-  if (weeksUntilRace > 4) return 'Peak Phase';
-  return 'Taper';
+function buildHistoryContext(completedWeeks: CompletedWeek[]): string {
+  if (completedWeeks.length === 0) {
+    return "This is the athlete's first week of training. No prior history.";
+  }
+
+  const parts: string[] = [];
+
+  // Last 2 weeks: detailed view
+  const recentWeeks = completedWeeks.slice(-2);
+  if (recentWeeks.length > 0) {
+    parts.push('RECENT WEEKS (detailed):');
+    recentWeeks.forEach((week) => {
+      const keyWorkoutsStr = week.summary.keyWorkouts
+        .map((k) => `${k.name} ${k.completed ? '✓' : '✗'}${k.notes ? ` (${k.notes})` : ''}`)
+        .join(', ');
+
+      parts.push(
+        `- Week ${week.weekNumber} (${week.phase}): ` +
+          `${week.summary.completedHours.toFixed(1)}h of ${week.summary.plannedHours.toFixed(1)}h ` +
+          `(${week.summary.completionRate}% completion). ` +
+          `Key sessions: ${keyWorkoutsStr}. ` +
+          `Feeling: ${week.summary.feedback.overallFeeling}. ` +
+          (week.summary.feedback.physicalIssues.length > 0
+            ? `Issues: ${week.summary.feedback.physicalIssues.join(', ')}. `
+            : '') +
+          (week.summary.feedback.notes ? `Notes: "${week.summary.feedback.notes}"` : '')
+      );
+    });
+  }
+
+  // Older weeks: compressed summary
+  const olderWeeks = completedWeeks.slice(0, -2);
+  if (olderWeeks.length > 0) {
+    const avgCompletion =
+      olderWeeks.reduce((sum, w) => sum + w.summary.completionRate, 0) / olderWeeks.length;
+    const avgHours =
+      olderWeeks.reduce((sum, w) => sum + w.summary.completedHours, 0) / olderWeeks.length;
+    const totalHours = olderWeeks.reduce((sum, w) => sum + w.summary.completedHours, 0);
+    const phases = [...new Set(olderWeeks.map((w) => w.phase))];
+
+    // Check for recurring issues
+    const allIssues = olderWeeks.flatMap((w) => w.summary.feedback.physicalIssues);
+    const issueCounts: Record<string, number> = {};
+    allIssues.forEach((issue) => {
+      issueCounts[issue] = (issueCounts[issue] || 0) + 1;
+    });
+    const recurringIssues = Object.entries(issueCounts)
+      .filter(([, count]) => count >= 2)
+      .map(([issue]) => issue);
+
+    parts.push('');
+    parts.push('TRAINING HISTORY (weeks 1-' + olderWeeks.length + '):');
+    parts.push(
+      `- Total: ${totalHours.toFixed(1)}h over ${olderWeeks.length} weeks (avg ${avgHours.toFixed(1)}h/week)`
+    );
+    parts.push(`- Average completion: ${avgCompletion.toFixed(0)}%`);
+    parts.push(`- Phases completed: ${phases.join(' → ')}`);
+    if (recurringIssues.length > 0) {
+      parts.push(`- Recurring issues to monitor: ${recurringIssues.join(', ')}`);
+    }
+  }
+
+  return parts.join('\n');
 }
 
-/**
- * Calculates weeks until the race date
- */
-function getWeeksUntilRace(raceDate: Date): number {
-  const now = new Date();
-  const diffTime = raceDate.getTime() - now.getTime();
-  const diffWeeks = Math.ceil(diffTime / (1000 * 60 * 60 * 24 * 7));
-  return Math.max(1, diffWeeks);
-}
+// ============================================
+// PROMPT BUILDER
+// ============================================
 
 /**
- * Builds the prompt that we send to Claude
+ * Builds the prompt for generating a single week
  */
-function buildPrompt(userData: OnboardingData): string {
-  const weeksUntilRace = getWeeksUntilRace(new Date(userData.goal.raceDate));
-  const phase = calculateTrainingPhase(weeksUntilRace);
-  const isTriathlon = ['olympic-triathlon', 'sprint-triathlon', '70.3-ironman', 'full-ironman'].includes(userData.goal.raceType);
-  
-  return `You are an expert endurance coach creating a personalized 4-week training plan.
+function buildWeekPrompt(
+  userData: OnboardingData,
+  weekNumber: number,
+  totalWeeks: number,
+  completedWeeks: CompletedWeek[],
+  nextWeekConstraints?: string
+): string {
+  const phase = calculateTrainingPhase(weekNumber, totalWeeks);
+  const isRecovery = isRecoveryWeek(weekNumber);
+  const hrZones = calculateHRZones(userData.fitness.lthr);
+  const weeksUntilRace = totalWeeks - weekNumber;
 
-## ATHLETE
+  const isTriathlon = [
+    'olympic-triathlon',
+    'sprint-triathlon',
+    '70.3-ironman',
+    'full-ironman',
+  ].includes(userData.goal.raceType);
+
+  const historyContext = buildHistoryContext(completedWeeks);
+
+  // Get last week's feedback if available
+  const lastWeek = completedWeeks[completedWeeks.length - 1];
+  const lastWeekFeedback = lastWeek?.summary.feedback;
+
+  return `You are an expert ${isTriathlon ? 'triathlon' : 'running'} coach creating a detailed weekly training plan.
+
+## ATHLETE PROFILE
 - Name: ${userData.profile.firstName}
 - Age: ${userData.profile.age}, Weight: ${userData.profile.weight}kg, Height: ${userData.profile.height}cm
 - Level: ${userData.fitness.fitnessLevel}
-- Max HR: ${userData.fitness.maxHR}bpm, LTHR: ${userData.fitness.lthr}bpm
-- Threshold pace: ${userData.fitness.thresholdPace}/km
+- Max HR: ${userData.fitness.maxHR}bpm
+- LTHR: ${userData.fitness.lthr}bpm
+- Threshold Pace: ${userData.fitness.thresholdPace}/km
 ${userData.fitness.ftp ? `- FTP: ${userData.fitness.ftp}W` : ''}
-- Swim level: ${userData.fitness.swimLevel}
+- Swim Level: ${userData.fitness.swimLevel}
 
-## GOAL
-- Race: ${userData.goal.raceType} "${userData.goal.raceName}"
-- Date: ${new Date(userData.goal.raceDate).toLocaleDateString()} (${weeksUntilRace} weeks)
-- Phase: ${phase}
-- Priority: ${userData.goal.priority}
-${userData.goal.goalTime ? `- Target: ${userData.goal.goalTime}` : ''}
+## HEART RATE ZONES (based on LTHR ${userData.fitness.lthr})
+- Zone 1 Recovery: ${hrZones.zone1.min}-${hrZones.zone1.max}bpm
+- Zone 2 Aerobic: ${hrZones.zone2.min}-${hrZones.zone2.max}bpm
+- Zone 3 Tempo: ${hrZones.zone3.min}-${hrZones.zone3.max}bpm
+- Zone 4 Threshold: ${hrZones.zone4.min}-${hrZones.zone4.max}bpm
+- Zone 5 VO2max: ${hrZones.zone5.min}-${hrZones.zone5.max}bpm
 
-## AVAILABILITY
-Mon: ${userData.availability.monday.available ? userData.availability.monday.maxDuration : 'REST'}
-Tue: ${userData.availability.tuesday.available ? userData.availability.tuesday.maxDuration : 'REST'}
-Wed: ${userData.availability.wednesday.available ? userData.availability.wednesday.maxDuration : 'REST'}
-Thu: ${userData.availability.thursday.available ? userData.availability.thursday.maxDuration : 'REST'}
-Fri: ${userData.availability.friday.available ? userData.availability.friday.maxDuration : 'REST'}
-Sat: ${userData.availability.saturday.available ? userData.availability.saturday.maxDuration + (userData.availability.saturday.longSession ? ' (LONG)' : '') : 'REST'}
-Sun: ${userData.availability.sunday.available ? userData.availability.sunday.maxDuration + (userData.availability.sunday.longSession ? ' (LONG)' : '') : 'REST'}
+## RACE GOAL
+- Race: ${userData.goal.raceName} (${userData.goal.raceType})
+- Date: ${new Date(userData.goal.raceDate).toLocaleDateString()}
+- Weeks until race: ${weeksUntilRace}
+- Goal: ${userData.goal.priority}
+${userData.goal.goalTime ? `- Target time: ${userData.goal.goalTime}` : ''}
+
+## TRAINING CONTEXT
+- Currently generating: WEEK ${weekNumber} of ${totalWeeks}
+- Training phase: ${phase}
+${isRecovery ? '- ⚠️ THIS IS A RECOVERY/DELOAD WEEK - Reduce volume by 30-40%, keep intensity low' : ''}
+${lastWeekFeedback?.overallFeeling === 'struggling' || lastWeekFeedback?.overallFeeling === 'tired' ? '- ⚠️ Athlete reported fatigue last week - consider reducing load' : ''}
+${lastWeekFeedback?.physicalIssues && lastWeekFeedback.physicalIssues.length > 0 ? `- ⚠️ Physical issues reported: ${lastWeekFeedback.physicalIssues.join(', ')} - adapt accordingly` : ''}
+${nextWeekConstraints ? `- ⚠️ Athlete constraint: "${nextWeekConstraints}" - adapt schedule accordingly` : ''}
+
+## TRAINING HISTORY
+${historyContext}
+
+## WEEKLY AVAILABILITY
+- Monday: ${userData.availability.monday.available ? `Available (${userData.availability.monday.timeSlots.join(', ')}, max ${userData.availability.monday.maxDuration})` : 'REST DAY'}
+- Tuesday: ${userData.availability.tuesday.available ? `Available (${userData.availability.tuesday.timeSlots.join(', ')}, max ${userData.availability.tuesday.maxDuration})` : 'REST DAY'}
+- Wednesday: ${userData.availability.wednesday.available ? `Available (${userData.availability.wednesday.timeSlots.join(', ')}, max ${userData.availability.wednesday.maxDuration})` : 'REST DAY'}
+- Thursday: ${userData.availability.thursday.available ? `Available (${userData.availability.thursday.timeSlots.join(', ')}, max ${userData.availability.thursday.maxDuration})` : 'REST DAY'}
+- Friday: ${userData.availability.friday.available ? `Available (${userData.availability.friday.timeSlots.join(', ')}, max ${userData.availability.friday.maxDuration})` : 'REST DAY'}
+- Saturday: ${userData.availability.saturday.available ? `Available (${userData.availability.saturday.timeSlots.join(', ')}, max ${userData.availability.saturday.maxDuration})${userData.availability.saturday.longSession ? ' - LONG SESSION DAY' : ''}` : 'REST DAY'}
+- Sunday: ${userData.availability.sunday.available ? `Available (${userData.availability.sunday.timeSlots.join(', ')}, max ${userData.availability.sunday.maxDuration})${userData.availability.sunday.longSession ? ' - LONG SESSION DAY' : ''}` : 'REST DAY'}
 
 ## INSTRUCTIONS
-Create a 4-week ${isTriathlon ? 'triathlon' : 'running'} training plan. Return ONLY valid JSON.
+Generate a DETAILED training week. For each workout, provide comprehensive descriptions including:
+1. Clear warm-up protocol with duration and intensity
+2. Main set with SPECIFIC intervals, paces, HR zones, and recovery periods
+3. Cool-down protocol
+4. Why this workout matters for their goal
 
-For EACH workout description, include:
-1. Session overview (1 sentence)
-2. WARM-UP: duration and what to do
-3. MAIN SET: detailed intervals/structure with specific paces and HR zones based on their LTHR of ${userData.fitness.lthr}bpm
-4. COOL-DOWN: duration and what to do
-5. Key focus points
+Use the athlete's ACTUAL HR zones and threshold pace in your descriptions.
 
-Calculate HR zones from LTHR ${userData.fitness.lthr}:
-- Zone 1 (Recovery): ${Math.round(userData.fitness.lthr * 0.68)}-${Math.round(userData.fitness.lthr * 0.73)}bpm
-- Zone 2 (Aerobic): ${Math.round(userData.fitness.lthr * 0.73)}-${Math.round(userData.fitness.lthr * 0.80)}bpm
-- Zone 3 (Tempo): ${Math.round(userData.fitness.lthr * 0.80)}-${Math.round(userData.fitness.lthr * 0.87)}bpm
-- Zone 4 (Threshold): ${Math.round(userData.fitness.lthr * 0.87)}-${Math.round(userData.fitness.lthr * 0.93)}bpm
-- Zone 5 (VO2max): ${Math.round(userData.fitness.lthr * 0.93)}-${Math.round(userData.fitness.lthr * 1.05)}bpm
-
-JSON structure:
+Return ONLY valid JSON (no markdown, no explanation):
 {
+  "weekNumber": ${weekNumber},
+  "theme": "Week theme (e.g., 'Aerobic Base Building', 'Speed Development')",
+  "focus": "Primary focus for the week",
   "phase": "${phase}",
-  "notes": "Overall plan summary",
-  "weeks": [
+  "workouts": [
     {
-      "weekNumber": 1,
-      "theme": "Theme",
-      "focus": "Focus area",
-      "workouts": [
-        {
-          "dayOfWeek": "monday",
-          "type": "run",
-          "name": "Workout Name",
-          "duration": 60,
-          "distance": 10,
-          "purpose": "Why this workout matters for the athlete",
-          "description": "WARM-UP: 10min easy jog at Zone 1 (${Math.round(userData.fitness.lthr * 0.68)}-${Math.round(userData.fitness.lthr * 0.73)}bpm). MAIN SET: 4x5min at Zone 4 (${Math.round(userData.fitness.lthr * 0.87)}-${Math.round(userData.fitness.lthr * 0.93)}bpm) with 2min easy jog recovery. Pace target: ${userData.fitness.thresholdPace}/km. COOL-DOWN: 10min easy jog. Focus on maintaining relaxed shoulders and quick cadence.",
-          "coachingTips": ["Specific actionable tip 1", "Specific actionable tip 2", "Specific actionable tip 3"]
-        }
+      "dayOfWeek": "monday",
+      "type": "run",
+      "name": "Workout Name",
+      "duration": 60,
+      "distance": 10,
+      "purpose": "Why this workout - connect to their race goal",
+      "description": "WARM-UP: 15min easy running at Zone 1 (${hrZones.zone1.min}-${hrZones.zone1.max}bpm), gradually increasing to Zone 2. Include dynamic stretches: leg swings, high knees, butt kicks.\\n\\nMAIN SET: 5x1000m at Zone 4 (${hrZones.zone4.min}-${hrZones.zone4.max}bpm), pace ${userData.fitness.thresholdPace}/km. Take 90sec easy jog recovery between reps. Focus on maintaining consistent pace across all intervals.\\n\\nCOOL-DOWN: 10min easy jog at Zone 1, followed by static stretching.",
+      "coachingTips": [
+        "Specific actionable tip based on their level",
+        "Form cue relevant to the workout",
+        "Mental strategy for the hard efforts"
       ]
     }
   ]
 }
 
 RULES:
-- 4-6 workouts per week based on availability
+- Generate 4-6 workouts based on availability (rest days where not available)
 - type must be: "run", "bike", "swim", "strength", or "rest"
-- distance in km (use null for strength/rest)
+- distance in km (null for strength/rest)
 - duration in minutes
-- Include specific HR zones and paces in descriptions
-- NO trailing commas in JSON
-- NO markdown code blocks`;
+- Use \\n for line breaks in description
+- Include SPECIFIC HR zones and paces in every description
+- NO trailing commas
+${isRecovery ? '- This is recovery week: shorter sessions, lower intensity, no hard intervals' : ''}
+${isTriathlon ? '- Balance swim/bike/run across the week' : '- Focus on running with supporting strength work'}`;
 }
 
+// ============================================
+// JSON PARSING
+// ============================================
+
 /**
- * Attempts to fix and complete truncated JSON
+ * Attempts to fix truncated or malformed JSON
  */
 function fixTruncatedJson(str: string): string {
   // Remove markdown code blocks
   str = str.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-  
-  // Count brackets to see what's missing
+
+  // Count brackets
   let openBraces = 0;
   let openBrackets = 0;
   let inString = false;
   let escapeNext = false;
-  
+
   for (let i = 0; i < str.length; i++) {
     const char = str[i];
-    
+
     if (escapeNext) {
       escapeNext = false;
       continue;
     }
-    
+
     if (char === '\\') {
       escapeNext = true;
       continue;
     }
-    
+
     if (char === '"') {
       inString = !inString;
       continue;
     }
-    
+
     if (!inString) {
       if (char === '{') openBraces++;
       if (char === '}') openBraces--;
@@ -157,149 +257,150 @@ function fixTruncatedJson(str: string): string {
       if (char === ']') openBrackets--;
     }
   }
-  
-  // If we're in a string, close it
+
+  // Close unclosed string
   if (inString) {
     str += '"';
   }
-  
-  // Remove any trailing commas
+
+  // Remove trailing commas
   str = str.replace(/,\s*$/, '');
-  
-  // Add missing closing brackets and braces
+
+  // Add missing brackets/braces
   while (openBrackets > 0) {
-    // Check if we need to close an object first
-    const lastOpenBracket = str.lastIndexOf('[');
-    const lastOpenBrace = str.lastIndexOf('{');
-    const lastCloseBracket = str.lastIndexOf(']');
-    const lastCloseBrace = str.lastIndexOf('}');
-    
-    if (lastOpenBrace > lastOpenBracket && lastOpenBrace > lastCloseBrace) {
-      str = str.replace(/,\s*$/, '') + '}';
-      openBraces--;
-    } else {
-      str = str.replace(/,\s*$/, '') + ']';
-      openBrackets--;
-    }
+    str = str.replace(/,\s*$/, '') + ']';
+    openBrackets--;
   }
-  
+
   while (openBraces > 0) {
     str = str.replace(/,\s*$/, '') + '}';
     openBraces--;
   }
-  
-  // Final cleanup of trailing commas
+
+  // Clean trailing commas before closing brackets
   str = str.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
-  
+
   return str;
 }
 
 /**
- * Parses Claude's JSON response into our TrainingPlan type
+ * Parses Claude's response into a WeekPlan
  */
-function parseClaudeResponse(responseText: string): TrainingPlan {
+function parseWeekResponse(responseText: string, weekNumber: number): WeekPlan {
   console.log('Parsing Claude response, length:', responseText.length);
-  
-  // Extract JSON from response
+
+  // Extract JSON
   let jsonStr = responseText.trim();
-  
-  // Find JSON boundaries
   const startIndex = jsonStr.indexOf('{');
   if (startIndex > 0) {
     jsonStr = jsonStr.substring(startIndex);
   }
-  
-  // Try to fix truncated JSON
+
+  // Fix truncated JSON
   jsonStr = fixTruncatedJson(jsonStr);
-  
-  console.log('Cleaned JSON length:', jsonStr.length);
-  
+
   let parsed;
   try {
     parsed = JSON.parse(jsonStr);
   } catch (error) {
     console.error('JSON parse error:', error);
-    console.log('First 300 chars:', jsonStr.substring(0, 300));
-    console.log('Last 300 chars:', jsonStr.substring(jsonStr.length - 300));
-    throw new Error('Failed to parse training plan from AI response');
+    console.log('First 500 chars:', jsonStr.substring(0, 500));
+    console.log('Last 500 chars:', jsonStr.substring(jsonStr.length - 500));
+    throw new Error('Failed to parse training week from AI response');
   }
-  
-  // Validate basic structure
-  if (!parsed.weeks || !Array.isArray(parsed.weeks)) {
-    throw new Error('Invalid response: missing weeks array');
-  }
-  
-  console.log('Parsed', parsed.weeks.length, 'weeks');
-  
-  // Get Monday of current week
+
+  console.log('Parsed week with', parsed.workouts?.length || 0, 'workouts');
+
+  // Calculate week dates
   const today = new Date();
   const dayOfWeek = today.getDay();
   const monday = new Date(today);
   monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
   monday.setHours(0, 0, 0, 0);
-  
+
+  // If generating for current week, use this monday. Otherwise project forward.
+  const weekStart = new Date(monday);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+
   const dayToNumber: Record<string, number> = {
-    monday: 0, tuesday: 1, wednesday: 2, thursday: 3,
-    friday: 4, saturday: 5, sunday: 6
+    monday: 0,
+    tuesday: 1,
+    wednesday: 2,
+    thursday: 3,
+    friday: 4,
+    saturday: 5,
+    sunday: 6,
   };
-  
-  // Transform to our TrainingPlan type
-  const weeks: WeekPlan[] = parsed.weeks.map((week: any, weekIndex: number) => {
-    const weekStart = new Date(monday);
-    weekStart.setDate(monday.getDate() + weekIndex * 7);
-    
-    const workouts: Workout[] = (week.workouts || []).map((w: any) => {
-      const workoutDate = new Date(weekStart);
-      const dayStr = (w.dayOfWeek || 'monday').toLowerCase();
-      workoutDate.setDate(weekStart.getDate() + (dayToNumber[dayStr] ?? 0));
-      
-      return {
-        id: `w${weekIndex + 1}-${dayStr}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-        date: workoutDate,
-        type: (w.type || 'run') as WorkoutType,
-        name: w.name || 'Workout',
-        duration: w.duration || 45,
-        distance: w.distance || undefined,
-        description: w.description || w.purpose || '',
-        purpose: w.purpose || '',
-        structure: w.structure || [],
-        heartRateGuidance: w.heartRateGuidance || '',
-        paceGuidance: w.paceGuidance || '',
-        coachingTips: w.coachingTips || [],
-        adaptationNotes: w.adaptationNotes || '',
-        status: 'planned' as const,
-      };
-    });
-    
+
+  // Transform workouts
+  const workouts: Workout[] = (parsed.workouts || []).map((w: any) => {
+    const workoutDate = new Date(weekStart);
+    const dayStr = (w.dayOfWeek || 'monday').toLowerCase();
+    workoutDate.setDate(weekStart.getDate() + (dayToNumber[dayStr] ?? 0));
+
     return {
-      weekNumber: week.weekNumber || weekIndex + 1,
-      theme: week.theme || `Week ${weekIndex + 1}`,
-      focus: week.focus || '',
-      totalHours: Math.round(workouts.reduce((sum, w) => sum + w.duration, 0) / 60 * 10) / 10,
-      workouts,
+      id: `w${weekNumber}-${dayStr}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+      date: workoutDate,
+      type: (w.type || 'run') as WorkoutType,
+      name: w.name || 'Workout',
+      duration: w.duration || 45,
+      distance: w.distance || undefined,
+      description: (w.description || '').replace(/\\n/g, '\n'),
+      purpose: w.purpose || '',
+      structure: w.structure || [],
+      heartRateGuidance: w.heartRateGuidance || '',
+      paceGuidance: w.paceGuidance || '',
+      coachingTips: w.coachingTips || [],
+      adaptationNotes: w.adaptationNotes || '',
+      status: 'planned' as const,
     };
   });
-  
+
+  const totalMinutes = workouts.reduce((sum, w) => sum + (w.duration || 0), 0);
+
   return {
-    id: `plan-${Date.now()}`,
-    createdAt: new Date(),
-    weeks,
-    phase: parsed.phase || 'Training',
-    notes: parsed.notes || '',
+    weekNumber: parsed.weekNumber || weekNumber,
+    startDate: weekStart,
+    endDate: weekEnd,
+    theme: parsed.theme || `Week ${weekNumber}`,
+    focus: parsed.focus || '',
+    phase: parsed.phase || '',
+    totalPlannedHours: Math.round((totalMinutes / 60) * 10) / 10,
+    isRecoveryWeek: isRecoveryWeek(weekNumber),
+    workouts,
   };
 }
 
+// ============================================
+// MAIN EXPORT FUNCTION
+// ============================================
+
 /**
- * Main function: Generates a training plan using Claude AI
+ * Generates a single week's training plan with full detail
  */
-export async function generateTrainingPlanWithClaude(userData: OnboardingData): Promise<TrainingPlan> {
+export async function generateWeekPlan(
+  userData: OnboardingData,
+  weekNumber: number,
+  totalWeeks: number,
+  completedWeeks: CompletedWeek[],
+  nextWeekConstraints?: string
+): Promise<WeekPlan> {
   if (!ANTHROPIC_API_KEY) {
     throw new Error('Anthropic API key not configured. Add VITE_ANTHROPIC_API_KEY to .env.local');
   }
-  
-  const prompt = buildPrompt(userData);
-  console.log('Sending request to Claude API...');
-  
+
+  const prompt = buildWeekPrompt(
+    userData,
+    weekNumber,
+    totalWeeks,
+    completedWeeks,
+    nextWeekConstraints
+  );
+
+  console.log(`Generating Week ${weekNumber} of ${totalWeeks}...`);
+  console.log('Prompt length:', prompt.length, 'chars');
+
   const response = await fetch(ANTHROPIC_API_URL, {
     method: 'POST',
     headers: {
@@ -310,25 +411,57 @@ export async function generateTrainingPlanWithClaude(userData: OnboardingData): 
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 16000,
+      max_tokens: 8000,
       messages: [{ role: 'user', content: prompt }],
     }),
   });
-  
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     console.error('Claude API error:', errorData);
     throw new Error(`Claude API error: ${response.status}`);
   }
-  
+
   const data = await response.json();
   console.log('Received response from Claude');
-  
-  // Check if response was truncated
+
   if (data.stop_reason === 'max_tokens') {
-    console.warn('Response was truncated due to max_tokens limit');
+    console.warn('Response was truncated - will attempt to fix');
   }
-  
+
   const responseText = data.content[0].text;
-  return parseClaudeResponse(responseText);
+  return parseWeekResponse(responseText, weekNumber);
+}
+
+/**
+ * Creates a summary of a completed week for history context
+ */
+export function createWeekSummary(week: WeekPlan, feedback: import('@/types/training').WeekFeedback): WeekSummary {
+  const completedWorkouts = week.workouts.filter((w) => w.status === 'completed');
+  const plannedHours = week.totalPlannedHours;
+  const completedHours =
+    completedWorkouts.reduce((sum, w) => sum + (w.actualData?.duration || w.duration), 0) / 60;
+
+  // Identify key workouts (longest or highest intensity)
+  const keyWorkouts = week.workouts
+    .filter((w) => w.type !== 'rest' && w.type !== 'strength')
+    .sort((a, b) => b.duration - a.duration)
+    .slice(0, 3)
+    .map((w) => ({
+      name: w.name,
+      type: w.type,
+      completed: w.status === 'completed',
+      notes: w.actualData?.notes,
+    }));
+
+  return {
+    weekNumber: week.weekNumber,
+    phase: week.phase,
+    theme: week.theme,
+    plannedHours,
+    completedHours: Math.round(completedHours * 10) / 10,
+    completionRate: Math.round((completedWorkouts.length / week.workouts.filter(w => w.type !== 'rest').length) * 100),
+    keyWorkouts,
+    feedback,
+  };
 }
