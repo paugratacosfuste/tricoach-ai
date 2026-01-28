@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { OnboardingProvider } from "@/contexts/OnboardingContext";
 import { TrainingProvider } from "@/contexts/TrainingContext";
 import Index from "./pages/Index";
+import Dashboard from "./pages/Dashboard";
 import { CalendarPage } from "./pages/CalendarPage";
 import { ProgressPage } from "./pages/ProgressPage";
 import { GoalsPage } from "./pages/GoalsPage";
@@ -25,6 +26,8 @@ const App = () => (
           <BrowserRouter>
             <Routes>
               <Route path="/" element={<Index />} />
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/onboarding" element={<Index />} />
               <Route path="/calendar" element={<CalendarPage />} />
               <Route path="/progress" element={<ProgressPage />} />
               <Route path="/goals" element={<GoalsPage />} />

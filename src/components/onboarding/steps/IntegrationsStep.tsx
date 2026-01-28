@@ -87,7 +87,7 @@ function IntegrationCard({
 
 export function IntegrationsStep() {
   const navigate = useNavigate();
-  const { data, updateData, previousStep } = useOnboarding();
+  const { data, updateData, previousStep, completeOnboarding } = useOnboarding();
   const { initializePlan } = useTraining();
 
   const [isGenerating, setIsGenerating] = useState(false);
@@ -175,6 +175,9 @@ export function IntegrationsStep() {
       await initializePlan(completeData);
 
       console.log('Plan initialized successfully!');
+
+      // Mark onboarding as complete
+      completeOnboarding();
 
       // Navigate to dashboard
       navigate('/dashboard');

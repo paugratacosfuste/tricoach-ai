@@ -138,7 +138,7 @@ export default function Dashboard() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button className="w-full" onClick={() => navigate('/onboarding')}>
+            <Button className="w-full" onClick={() => navigate('/')}>
               Get Started
             </Button>
           </CardContent>

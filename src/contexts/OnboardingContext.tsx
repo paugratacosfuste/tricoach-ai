@@ -5,13 +5,19 @@ interface OnboardingContextType {
   data: Partial<OnboardingData>;
   currentStep: number;
   setCurrentStep: (step: number) => void;
+  updateData: (data: Partial<OnboardingData>) => void;
   updateProfile: (profile: Partial<UserProfile>) => void;
   updateFitness: (fitness: Partial<FitnessAssessment>) => void;
   updateGoal: (goal: Partial<RaceGoal>) => void;
   updateAvailability: (availability: Partial<WeeklyAvailability>) => void;
   updateIntegrations: (integrations: Partial<Integrations>) => void;
   isComplete: boolean;
+  isStarted: boolean;
+  startOnboarding: () => void;
   completeOnboarding: () => void;
+  resetOnboarding: () => void;
+  nextStep: () => void;
+  previousStep: () => void;
 }
 
 const defaultAvailability: WeeklyAvailability = {
@@ -34,9 +40,15 @@ const OnboardingContext = createContext<OnboardingContextType | undefined>(undef
 
 export function OnboardingProvider({ children }: { children: ReactNode }) {
   const [currentStep, setCurrentStep] = useState(1);
+  
   const [isComplete, setIsComplete] = useState(() => {
     return localStorage.getItem('onboarding_complete') === 'true';
   });
+  
+  const [isStarted, setIsStarted] = useState(() => {
+    return localStorage.getItem('onboarding_started') === 'true';
+  });
+  
   const [data, setData] = useState<Partial<OnboardingData>>(() => {
     const saved = localStorage.getItem('onboarding_data');
     if (saved) {
@@ -51,6 +63,14 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       integrations: defaultIntegrations,
     };
   });
+
+  const updateData = (newData: Partial<OnboardingData>) => {
+    setData(prev => {
+      const updated = { ...prev, ...newData };
+      localStorage.setItem('onboarding_data', JSON.stringify(updated));
+      return updated;
+    });
+  };
 
   const updateProfile = (profile: Partial<UserProfile>) => {
     setData(prev => {
@@ -92,9 +112,38 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  const startOnboarding = () => {
+    setIsStarted(true);
+    setCurrentStep(1);
+    localStorage.setItem('onboarding_started', 'true');
+  };
+
   const completeOnboarding = () => {
     setIsComplete(true);
+    setIsStarted(false);
     localStorage.setItem('onboarding_complete', 'true');
+    localStorage.removeItem('onboarding_started');
+  };
+
+  const resetOnboarding = () => {
+    setIsComplete(false);
+    setIsStarted(false);
+    setCurrentStep(1);
+    setData({
+      availability: defaultAvailability,
+      integrations: defaultIntegrations,
+    });
+    localStorage.removeItem('onboarding_complete');
+    localStorage.removeItem('onboarding_started');
+    localStorage.removeItem('onboarding_data');
+  };
+
+  const nextStep = () => {
+    setCurrentStep(prev => prev + 1);
+  };
+
+  const previousStep = () => {
+    setCurrentStep(prev => Math.max(1, prev - 1));
   };
 
   return (
@@ -102,13 +151,19 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
       data,
       currentStep,
       setCurrentStep,
+      updateData,
       updateProfile,
       updateFitness,
       updateGoal,
       updateAvailability,
       updateIntegrations,
       isComplete,
+      isStarted,
+      startOnboarding,
       completeOnboarding,
+      resetOnboarding,
+      nextStep,
+      previousStep,
     }}>
       {children}
     </OnboardingContext.Provider>
