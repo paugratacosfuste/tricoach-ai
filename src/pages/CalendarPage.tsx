@@ -5,7 +5,7 @@ import { WorkoutDetailSheet } from '@/components/dashboard/WorkoutDetailSheet';
 import { Calendar } from '@/components/ui/calendar';
 import { useTraining } from '@/contexts/TrainingContext';
 import { Workout, WorkoutType } from '@/types/training';
-import { format, isSameMonth, startOfMonth, isSameDay } from 'date-fns';
+import { format, startOfWeek, isSameDay } from 'date-fns';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -24,7 +24,7 @@ export function CalendarPage() {
   const [selectedWorkout, setSelectedWorkout] = useState<Workout | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   
-  const { getWorkoutsForDate, updateWorkoutStatus } = useTraining();
+  const { currentWeek, getWorkoutsForDate, updateWorkoutStatus } = useTraining();
 
   const selectedDateWorkouts = selectedDate ? getWorkoutsForDate(selectedDate) : [];
 
@@ -47,9 +47,40 @@ export function CalendarPage() {
     setSheetOpen(true);
   };
 
+  // Check if a date is a rest day (has a rest workout or is in the current week with no workouts)
+  const isRestDay = (date: Date): boolean => {
+    if (!currentWeek) return false;
+    
+    // Check if this date is within the current week
+    const weekStart = new Date(currentWeek.startDate);
+    const weekEnd = new Date(currentWeek.endDate);
+    weekStart.setHours(0, 0, 0, 0);
+    weekEnd.setHours(23, 59, 59, 999);
+    
+    if (date < weekStart || date > weekEnd) return false;
+    
+    // Check if there's a rest workout on this day
+    const workouts = getWorkoutsForDate(date);
+    if (workouts.some(w => w.type === 'rest')) return true;
+    
+    // If no workouts scheduled for this day in the current week, it's a rest day
+    return workouts.length === 0;
+  };
+
   // Custom day render to show workout indicators
   const renderDay = (day: Date) => {
     const workouts = getWorkoutsForDate(day);
+    const restDay = isRestDay(day);
+    
+    // Show rest emoji if it's a rest day with no other workouts
+    if (restDay && workouts.length === 0) {
+      return (
+        <div className="flex gap-0.5 justify-center mt-1">
+          <span className="text-xs">{workoutIcons.rest}</span>
+        </div>
+      );
+    }
+    
     if (workouts.length === 0) return null;
     
     return (
@@ -67,6 +98,9 @@ export function CalendarPage() {
       </div>
     );
   };
+
+  // Check if selected date is a rest day
+  const selectedIsRestDay = selectedDate ? isRestDay(selectedDate) && selectedDateWorkouts.length === 0 : false;
 
   return (
     <DashboardLayout>
@@ -110,6 +144,7 @@ export function CalendarPage() {
                 onSelect={setSelectedDate}
                 month={currentMonth}
                 onMonthChange={setCurrentMonth}
+                weekStartsOn={1}
                 className="pointer-events-auto w-full"
                 classNames={{
                   months: "w-full",
@@ -148,7 +183,15 @@ export function CalendarPage() {
                 {selectedDate ? format(selectedDate, 'EEEE, MMMM d') : 'Select a date'}
               </h3>
               
-              {selectedDateWorkouts.length === 0 ? (
+              {selectedIsRestDay ? (
+                <div className="text-center py-8">
+                  <span className="text-4xl mb-2 block">{workoutIcons.rest}</span>
+                  <p className="text-muted-foreground font-medium">Rest Day</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Recovery is part of training!
+                  </p>
+                </div>
+              ) : selectedDateWorkouts.length === 0 ? (
                 <p className="text-muted-foreground text-center py-8">
                   No workouts scheduled
                 </p>
