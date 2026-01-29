@@ -241,6 +241,7 @@ export function TrainingProvider({ children }: { children: ReactNode }) {
         phase: plan.currentWeek.phase,
         theme: plan.currentWeek.theme,
         focus: plan.currentWeek.focus,
+        totalPlannedHours: plan.currentWeek.totalPlannedHours,
         workouts: plan.currentWeek.workouts,
         summary: createWeekSummary(plan.currentWeek, feedback),
       };
@@ -304,6 +305,7 @@ export function TrainingProvider({ children }: { children: ReactNode }) {
       phase: plan.currentWeek.phase,
       theme: plan.currentWeek.theme,
       focus: plan.currentWeek.focus,
+      totalPlannedHours: plan.currentWeek.totalPlannedHours,
       workouts: plan.currentWeek.workouts,
       summary: createWeekSummary(plan.currentWeek, feedback),
     };

@@ -187,6 +187,7 @@ export interface CompletedWeek {
   phase: string;
   theme: string;
   focus: string;
+  totalPlannedHours: number;
   workouts: Workout[];
   summary: WeekSummary;
 }
