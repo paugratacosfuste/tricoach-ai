@@ -35,6 +35,7 @@ interface TrainingContextType {
   getWorkoutById: (workoutId: string) => Workout | undefined;
   getTodaysWorkout: () => Workout | undefined;
   getUpcomingWorkouts: (count: number) => Workout[];
+  getWorkoutsForDate: (date: Date) => Workout[];
   
   // Week management
   completeCurrentWeek: (feedback: WeekFeedback) => void;
@@ -387,6 +388,22 @@ export function TrainingProvider({ children }: { children: ReactNode }) {
   };
 
   /**
+   * Get workouts for a specific date
+   */
+  const getWorkoutsForDate = (date: Date): Workout[] => {
+    if (!plan?.currentWeek) return [];
+    
+    return plan.currentWeek.workouts.filter((workout) => {
+      const workoutDate = new Date(workout.date);
+      return (
+        workoutDate.getDate() === date.getDate() &&
+        workoutDate.getMonth() === date.getMonth() &&
+        workoutDate.getFullYear() === date.getFullYear()
+      );
+    });
+  };
+
+  /**
    * Clear error state
    */
   const clearError = (): void => {
@@ -416,6 +433,7 @@ export function TrainingProvider({ children }: { children: ReactNode }) {
         getWorkoutById,
         getTodaysWorkout,
         getUpcomingWorkouts,
+        getWorkoutsForDate,
         completeCurrentWeek,
         clearError,
         resetPlan,
