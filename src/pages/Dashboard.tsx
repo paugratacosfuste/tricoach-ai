@@ -8,6 +8,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTraining } from '@/contexts/TrainingContext';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
+import { WorkoutDetailSheet } from '@/components/dashboard/WorkoutDetailSheet';
 import { WeekReview } from '@/components/WeekReview';
 import { WeekFeedback, Workout } from '@/types/training';
 import { Button } from '@/components/ui/button';
@@ -100,6 +101,10 @@ export default function Dashboard() {
 
   const [isReviewOpen, setIsReviewOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  
+  // Workout detail sheet state
+  const [selectedWorkout, setSelectedWorkout] = useState<Workout | null>(null);
+  const [isWorkoutSheetOpen, setIsWorkoutSheetOpen] = useState(false);
 
   // Handle week review submission
   const handleWeekReviewSubmit = async (feedback: WeekFeedback, constraints?: string) => {
@@ -112,6 +117,28 @@ export default function Dashboard() {
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  // Handle workout click - open detail sheet
+  const handleWorkoutClick = (workout: Workout) => {
+    setSelectedWorkout(workout);
+    setIsWorkoutSheetOpen(true);
+  };
+
+  // Handle workout complete from sheet
+  const handleWorkoutComplete = (workout: Workout) => {
+    updateWorkoutStatus(workout.id, 'completed', {
+      duration: workout.duration,
+      distance: workout.distance,
+      feeling: 3,
+    });
+    setIsWorkoutSheetOpen(false);
+  };
+
+  // Handle workout skip from sheet
+  const handleWorkoutSkip = (workout: Workout) => {
+    updateWorkoutStatus(workout.id, 'skipped');
+    setIsWorkoutSheetOpen(false);
   };
 
   // Loading state
@@ -327,7 +354,7 @@ export default function Dashboard() {
                   <WorkoutListItem
                     key={workout.id}
                     workout={workout}
-                    onClick={() => console.log('Workout clicked:', workout.id)}
+                    onClick={() => handleWorkoutClick(workout)}
                   />
                 ))}
               </div>
@@ -373,6 +400,15 @@ export default function Dashboard() {
           onSubmit={handleWeekReviewSubmit}
           currentWeek={currentWeek}
           isLoading={isGenerating}
+        />
+
+        {/* Workout Detail Sheet */}
+        <WorkoutDetailSheet
+          workout={selectedWorkout}
+          open={isWorkoutSheetOpen}
+          onClose={() => setIsWorkoutSheetOpen(false)}
+          onComplete={selectedWorkout ? () => handleWorkoutComplete(selectedWorkout) : undefined}
+          onSkip={selectedWorkout ? () => handleWorkoutSkip(selectedWorkout) : undefined}
         />
       </div>
     </DashboardLayout>
