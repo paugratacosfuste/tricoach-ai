@@ -10,6 +10,7 @@ import {
   WorkoutType,
   CompletedWeek,
   WeekSummary,
+  WeekFeedback,
   calculateHRZones,
   calculateTrainingPhase,
   isRecoveryWeek,
@@ -124,6 +125,26 @@ function buildWeekPrompt(
   const lastWeek = completedWeeks[completedWeeks.length - 1];
   const lastWeekFeedback = lastWeek?.summary.feedback;
 
+  // Build discipline distribution guidance for triathlon
+  const disciplineGuidance = isTriathlon
+    ? `
+## CRITICAL: WORKOUT DISTRIBUTION FOR TRIATHLON
+You MUST include ALL THREE disciplines (swim, bike, run) each week with EQUAL frequency:
+- SWIM: 2 sessions per week (skill level affects intensity, NOT frequency)
+- BIKE: 2 sessions per week
+- RUN: 2 sessions per week
+- Optional: 1 strength/mobility session
+
+The athlete's swim level is "${userData.fitness.swimLevel}". This means:
+- If beginner: Focus swim sessions on technique drills, shorter intervals, more rest
+- If intermediate: Mix technique with aerobic development
+- If advanced: Include threshold and race-pace work
+
+DO NOT reduce swim frequency because the athlete is a weaker swimmer. 
+Weaker disciplines need MORE practice, not less. Adjust INTENSITY and COMPLEXITY, not frequency.
+`
+    : '';
+
   return `You are an expert ${isTriathlon ? 'triathlon' : 'running'} coach creating a detailed weekly training plan.
 
 ## ATHLETE PROFILE
@@ -149,11 +170,11 @@ ${userData.fitness.ftp ? `- FTP: ${userData.fitness.ftp}W` : ''}
 - Weeks until race: ${weeksUntilRace}
 - Goal: ${userData.goal.priority}
 ${userData.goal.goalTime ? `- Target time: ${userData.goal.goalTime}` : ''}
-
+${disciplineGuidance}
 ## TRAINING CONTEXT
 - Currently generating: WEEK ${weekNumber} of ${totalWeeks}
 - Training phase: ${phase}
-${isRecovery ? '- ⚠️ THIS IS A RECOVERY/DELOAD WEEK - Reduce volume by 30-40%, keep intensity low' : ''}
+${isRecovery ? '- ⚠️ THIS IS A RECOVERY/DELOAD WEEK - Reduce volume by 30-40%, keep intensity low, but still include all 3 disciplines' : ''}
 ${lastWeekFeedback?.overallFeeling === 'struggling' || lastWeekFeedback?.overallFeeling === 'tired' ? '- ⚠️ Athlete reported fatigue last week - consider reducing load' : ''}
 ${lastWeekFeedback?.physicalIssues && lastWeekFeedback.physicalIssues.length > 0 ? `- ⚠️ Physical issues reported: ${lastWeekFeedback.physicalIssues.join(', ')} - adapt accordingly` : ''}
 ${nextWeekConstraints ? `- ⚠️ Athlete constraint: "${nextWeekConstraints}" - adapt schedule accordingly` : ''}
@@ -188,31 +209,37 @@ Return ONLY valid JSON (no markdown, no explanation):
   "workouts": [
     {
       "dayOfWeek": "monday",
+      "type": "swim",
+      "name": "Technique & Endurance Swim",
+      "duration": 45,
+      "distance": 2,
+      "purpose": "Build swim efficiency and aerobic base for the swim leg",
+      "description": "WARM-UP: 200m easy freestyle, 4x50m drill (catch-up, fingertip drag)...\\n\\nMAIN SET: ...\\n\\nCOOL-DOWN: ...",
+      "coachingTips": ["tip1", "tip2", "tip3"]
+    },
+    {
+      "dayOfWeek": "tuesday",
       "type": "run",
       "name": "Workout Name",
       "duration": 60,
       "distance": 10,
       "purpose": "Why this workout - connect to their race goal",
-      "description": "WARM-UP: 15min easy running at Zone 1 (${hrZones.zone1.min}-${hrZones.zone1.max}bpm), gradually increasing to Zone 2. Include dynamic stretches: leg swings, high knees, butt kicks.\\n\\nMAIN SET: 5x1000m at Zone 4 (${hrZones.zone4.min}-${hrZones.zone4.max}bpm), pace ${userData.fitness.thresholdPace}/km. Take 90sec easy jog recovery between reps. Focus on maintaining consistent pace across all intervals.\\n\\nCOOL-DOWN: 10min easy jog at Zone 1, followed by static stretching.",
-      "coachingTips": [
-        "Specific actionable tip based on their level",
-        "Form cue relevant to the workout",
-        "Mental strategy for the hard efforts"
-      ]
+      "description": "WARM-UP: 15min easy running at Zone 1 (${hrZones.zone1.min}-${hrZones.zone1.max}bpm)...\\n\\nMAIN SET: ...\\n\\nCOOL-DOWN: ...",
+      "coachingTips": ["tip1", "tip2", "tip3"]
     }
   ]
 }
 
 RULES:
-- Generate 4-6 workouts based on availability (rest days where not available)
+- Generate 5-7 workouts based on availability (rest days where not available)
+${isTriathlon ? '- MANDATORY: Include exactly 2 swim, 2 bike, and 2 run sessions. Adjust intensity based on skill, not frequency.' : '- Focus on running with supporting strength work'}
 - type must be: "run", "bike", "swim", "strength", or "rest"
 - distance in km (null for strength/rest)
 - duration in minutes
 - Use \\n for line breaks in description
 - Include SPECIFIC HR zones and paces in every description
 - NO trailing commas
-${isRecovery ? '- This is recovery week: shorter sessions, lower intensity, no hard intervals' : ''}
-${isTriathlon ? '- Balance swim/bike/run across the week' : '- Focus on running with supporting strength work'}`;
+${isRecovery ? '- This is recovery week: shorter sessions, lower intensity, but still all 3 disciplines' : ''}`;
 }
 
 // ============================================
@@ -436,7 +463,7 @@ export async function generateWeekPlan(
 /**
  * Creates a summary of a completed week for history context
  */
-export function createWeekSummary(week: WeekPlan, feedback: import('@/types/training').WeekFeedback): WeekSummary {
+export function createWeekSummary(week: WeekPlan, feedback: WeekFeedback): WeekSummary {
   const completedWorkouts = week.workouts.filter((w) => w.status === 'completed');
   const plannedHours = week.totalPlannedHours;
   const completedHours =
