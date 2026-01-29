@@ -10,7 +10,7 @@ import { useTraining } from '@/contexts/TrainingContext';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { WorkoutDetailSheet } from '@/components/dashboard/WorkoutDetailSheet';
 import { WeekReview } from '@/components/WeekReview';
-import { WeekFeedback, Workout } from '@/types/training';
+import { WeekFeedback, Workout, WorkoutType } from '@/types/training';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -23,10 +23,6 @@ import {
   CheckCircle2,
   XCircle,
   Circle,
-  Dumbbell,
-  Bike,
-  Waves,
-  FootprintsIcon,
   Trophy,
   AlertCircle,
   Loader2,
@@ -34,22 +30,23 @@ import {
 } from 'lucide-react';
 
 // ============================================
+// CONSTANTS - Match Calendar page icons
+// ============================================
+
+const workoutIcons: Record<WorkoutType, string> = {
+  run: '🏃',
+  bike: '🚴',
+  swim: '🏊',
+  strength: '💪',
+  rest: '😴',
+};
+
+// ============================================
 // HELPER FUNCTIONS
 // ============================================
 
-function getWorkoutIcon(type: string) {
-  switch (type) {
-    case 'run':
-      return <FootprintsIcon className="w-5 h-5 text-orange-500" />;
-    case 'bike':
-      return <Bike className="w-5 h-5 text-blue-500" />;
-    case 'swim':
-      return <Waves className="w-5 h-5 text-cyan-500" />;
-    case 'strength':
-      return <Dumbbell className="w-5 h-5 text-purple-500" />;
-    default:
-      return <Circle className="w-5 h-5 text-gray-500" />;
-  }
+function getWorkoutIcon(type: WorkoutType) {
+  return <span className="text-xl">{workoutIcons[type] || '⚪'}</span>;
 }
 
 function getStatusIcon(status: string) {
